@@ -4,3 +4,6 @@
 *.xlsb
 *.xltx
 *.xltm
+*.db
+*.parquet
+*.csv
