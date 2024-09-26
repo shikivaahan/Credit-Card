@@ -1,4 +1,9 @@
 import pandas as pd
+from collections import deque
+from datetime import timedelta
+from tqdm import tqdm
+import multiprocessing as mp
+from functools import partial
 
 def calculate_time_delta(df: pd.DataFrame, time_col: str, ref_col: str) -> pd.Series:
     """
@@ -123,3 +128,111 @@ def average_transactions_per_time(df: pd.DataFrame, time_col: str) -> pd.Series:
     
     # Reindex to match the original DataFrame's index and fill missing values with 0
     return df[time_col].map(average_series).fillna(0)
+
+def process_chunk(chunk, time_col, ref_cols, interval_minutes):
+    window = deque()
+    last_interval_counts = []
+    
+    for _, row in chunk.iterrows():
+        current_time = row[time_col]
+        interval_ago = current_time - timedelta(minutes=interval_minutes)
+        
+        while window and window[0][1] < interval_ago:
+            window.popleft()
+        
+        window.append((tuple(row[ref_cols]), current_time))
+        count_in_window = sum(1 for ref, _ in window if ref == tuple(row[ref_cols]))
+        last_interval_counts.append(count_in_window)
+    
+    return pd.Series(last_interval_counts, index=chunk.index)
+
+def transactions_in_last_interval(df: pd.DataFrame, time_col: str, ref_cols: list, interval_minutes: int = 1, n_processes: int = None) -> pd.Series:
+    """
+    Calculate how many transactions occurred in the last 'interval_minutes' for each row,
+    grouped by multiple reference columns, using parallel processing.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        The input DataFrame containing the transaction data.
+    time_col : str
+        The name of the datetime64 column representing the time of each transaction/event.
+    ref_cols : list
+        A list of reference columns to group by (e.g., ['business_id', 'card_bin']).
+    interval_minutes : int, optional
+        The time interval in minutes to calculate the transaction count (default is 1 minute).
+    n_processes : int, optional
+        The number of processes to use for parallel processing. If None, it uses all available CPU cores.
+    
+    Returns:
+    --------
+    pd.Series
+        A Pandas Series with the count of transactions within the specified interval for each row,
+        with the same index as the original DataFrame.
+    """
+    
+    # Sort the DataFrame by the reference columns and the time column
+    sorted_df = df.sort_values(by=ref_cols + [time_col])
+    
+    # Determine the number of processes to use
+    if n_processes is None:
+        n_processes = mp.cpu_count()
+    
+    # Split the DataFrame into chunks
+    chunk_size = len(sorted_df) // n_processes
+    chunks = [sorted_df.iloc[i:i + chunk_size] for i in range(0, len(sorted_df), chunk_size)]
+    
+    # Create a partial function with fixed parameters
+    partial_process = partial(process_chunk, time_col=time_col, ref_cols=ref_cols, interval_minutes=interval_minutes)
+    
+    # Create a multiprocessing pool and apply the function to each chunk
+    results = []
+    with mp.Pool(processes=n_processes) as pool:
+        for result in tqdm(pool.imap(partial_process, chunks), total=len(chunks), desc="Processing chunks"):
+            results.append(result)
+    
+    # Combine the results
+    combined_results = pd.concat(results)
+    
+    # Return the result series re-indexed to match the original DataFrame
+    return combined_results.reindex(df.index)
+
+
+def transactions_last_minute(df: pd.DataFrame, time_col: str) -> pd.Series:
+    """
+    Count the number of transactions that occurred in the last minute 
+    before each transaction in the specified time column.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        The input DataFrame containing the transaction timestamps.
+    time_col : str
+        The name of the column representing the time of each transaction/event.
+
+    Returns:
+    --------
+    pd.Series
+        A Pandas Series containing the count of transactions that occurred in the last minute 
+        before each transaction timestamp. The first transaction will have a count of 0.
+    """
+    
+    # Ensure the specified column is in datetime64 format
+    df[time_col] = pd.to_datetime(df[time_col])
+
+    # Initialize an empty list to store the counts
+    counts = []
+
+    # Iterate over each transaction's timestamp with a progress bar
+    for timestamp in tqdm(df[time_col], desc="Counting transactions in last minute"):
+        # Define the time range for the last minute before the current timestamp
+        one_minute_ago = timestamp - pd.Timedelta(minutes=1)
+        
+        # Count the number of transactions in the last minute
+        count = df[(df[time_col] > one_minute_ago) & (df[time_col] <= timestamp)].shape[0]
+        
+        # Append the count to the list
+        counts.append(count)
+
+    # Return a Pandas Series with the counts
+    return pd.Series(counts, index=df.index)
