@@ -7,3 +7,4 @@
 *.db
 *.parquet
 *.csv
+notebooks/df.pkl
