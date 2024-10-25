@@ -236,3 +236,43 @@ def transactions_last_minute(df: pd.DataFrame, time_col: str) -> pd.Series:
 
     # Return a Pandas Series with the counts
     return pd.Series(counts, index=df.index)
+
+def calculate_time_for_n_transactions(df: pd.DataFrame, time_column: str, n: int) -> pd.Series:
+    """
+    Calculate the time difference in seconds between every n-th transaction.
+    
+    This function calculates the time difference between the current transaction
+    and the (n-1)-th previous transaction in the dataframe, returning a Pandas Series
+    with the results without modifying the original dataframe.
+
+    Parameters:
+    ----------
+    df : pd.DataFrame
+        The dataframe containing the transaction data.
+        
+    time_column : str
+        The column name representing the datetime values in the dataframe (must be in `datetime64` format).
+    
+    n : int
+        The number of transactions to calculate the time difference for.
+
+    Returns:
+    -------
+    pd.Series
+        A Pandas Series containing the time difference in seconds between each transaction
+        and the (n-1)-th previous transaction. For the first (n-1) transactions, the value will be 0.
+    """
+    
+    # Ensure the dataframe is sorted by the time column
+    df_sorted = df.sort_values(by=[time_column], ascending=True)
+    
+    # Calculate the time difference for every n-th transaction
+    time_difference = df_sorted[time_column] - df_sorted[time_column].shift(n-1)
+    
+    # Convert the time difference to seconds
+    time_difference = time_difference.dt.total_seconds()
+    
+    # Fill NaN values resulting from the first n-1 transactions with 0
+    time_difference.fillna(0, inplace=True)
+    
+    return time_difference
